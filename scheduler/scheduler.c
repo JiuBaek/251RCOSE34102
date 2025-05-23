@@ -5,6 +5,9 @@
 
 #define MAX_NAME_LEN 16
 #define MAX_PROCESSES 100
+#define MAX_TIME 1000
+int gantt_chart[MAX_TIME];
+int gantt_time = 0;
 
 // ------------------ 구조체 정의 ------------------
 
@@ -14,18 +17,17 @@ typedef struct {
     int arrival_time;         
     int cpu_burst_time;       
     int io_burst_time;        
-    int io_request_time;      
+    int* io_request_times; //언제 I/O 가 실행될 것 인가 (다중 시도 중, 1~3회)
+    int io_request_len;
+    int io_remaining_time;
     int priority;    
 
     //for simulation
     int remaining_time;
-    int waiting_time;
-    int turnaround_time;
-    int is_completed;
-    int io_requested;
+    int waiting_time; // eval에 사용
+    int turnaround_time; // eval에 사용
 
-    int is_waiting_io;
-    int io_remaining_time;
+    int is_waiting_io; //지금 io 진행중인가
 } Process;
 Process processes[MAX_PROCESSES];
 
@@ -87,7 +89,6 @@ SystemConfig* Config(int max_processes) {
     config->readyQueue = createQueue(max_processes);
     config->waitingQueue = createQueue(max_processes);
 
-    printf("Config initialized: readyQueue and waitingQueue created (capacity: %d)\n", max_processes);
     return config;
 }
 
@@ -106,23 +107,51 @@ Process* Create_Process(int n) {
 
     for (int i = 0; i < n; i++) {
         plist[i].pid = i + 1;
-        plist[i].arrival_time = rand() % 10; // 1~ 10
-        plist[i].cpu_burst_time = 1 + rand() % 20; // 1~20
-        plist[i].io_burst_time = 1 + rand() % 5; // 1 ~ 5
-        plist[i].io_request_time = 1;
-        //if (plist[i].cpu_burst_time > 1)
-        //    plist[i].io_request_time = rand() % (plist[i].cpu_burst_time - 1);
-        //else
-        //    plist[i].io_request_time = -1;  // I/O 없음
+        plist[i].arrival_time = rand() % 10;
+        plist[i].cpu_burst_time = 3 + rand() % 18; // 3 ~ 20
+        plist[i].io_burst_time = 1 + rand() % 5;
         plist[i].priority = 1 + rand() % 5;
 
+        //io 정하기
+        plist[i].io_remaining_time = plist[i].io_burst_time;
+        int io_count = 1 + rand() % 3;  // 1~3회
+        plist[i].io_request_len = io_count;
+        plist[i].io_request_times = malloc(sizeof(int) * io_count);
+
+        int max_time = plist[i].cpu_burst_time - 1;
+        int io_burst = 3;
+        plist[i].io_burst_time = io_burst;
+
+        int prev_time = 0;
+
+        int j;
+        for (j = 0; j < io_count; j++) {
+            int earliest = prev_time + io_burst;
+            if (earliest >= max_time) break; 
+
+            int t = earliest + rand() % (max_time - earliest + 1);
+            plist[i].io_request_times[j] = t;
+            prev_time = t;
+        }
+
+        plist[i].io_request_len = j;
+        
+        //오름차순
+        for (int a = 0; a < io_count - 1; a++) {
+            for (int b = a + 1; b < io_count; b++) {
+                if (plist[i].io_request_times[a] > plist[i].io_request_times[b]) {
+                    int tmp = plist[i].io_request_times[a];
+                    plist[i].io_request_times[a] = plist[i].io_request_times[b];
+                    plist[i].io_request_times[b] = tmp;
+                }
+            }
+        }
+
+        //simulation
         plist[i].remaining_time = plist[i].cpu_burst_time;
         plist[i].waiting_time = 0;
         plist[i].turnaround_time = 0;
-        plist[i].is_completed = 0;
         plist[i].is_waiting_io = 0;
-        plist[i].io_remaining_time = 0;
-        plist[i].io_requested = 0;
     }
 
     return plist;
@@ -138,15 +167,42 @@ Process* clone_process_list(Process* original, int n) {
 
 void Print_Processes(Process* plist, int n) {
 
+    printf("PID\tArrival\tCPU\tIO\tIO_Req_Times\tPriority\n");
+
     for (int i = 0; i < n; i++) {
-        printf("%d\t%d\t%d\t%d\t%d\t%d\n",
+        printf("%d\t%d\t%d\t%d\t",
             plist[i].pid,
             plist[i].arrival_time,
             plist[i].cpu_burst_time,
-            plist[i].io_burst_time,
-            plist[i].io_request_time,
-            plist[i].priority);
+            plist[i].io_burst_time);
+
+        printf("[");
+        for (int j = 0; j < plist[i].io_request_len; j++) {
+            printf("%d", plist[i].io_request_times[j]);
+            if (j < plist[i].io_request_len - 1) printf(", ");
+        }
+        printf("]");
+
+        printf("\t%d\n", plist[i].priority);
     }
+}
+
+//--------------------- Gantt Chart --------------------------
+void PrintGanttChart(int* chart, int time) {
+    printf("\nGantt Chart:\n");
+
+    for (int i = 0; i < time; i++) {
+        if (chart[i] == 0)
+            printf("|Idle ");
+        else
+            printf("| P%d ", chart[i]);
+    }
+    printf("|\n");
+
+    for (int i = 0; i <= time; i++) {
+        printf("%5d", i);
+    }
+    printf("\n");
 }
 
 //------------------- Evaluation fuction -----------------------
@@ -168,6 +224,59 @@ void Evaluation(Process* plist, int n, const char* name) {
     printf("Average Turnaround Time: %.2f\n", avg_tt);
 }
 
+//------------------ I/O --------------------------- FCFS, 
+int HandleIORequest(Process** running_ptr, SystemConfig* cfg, int current_time) {
+    Process* p = *running_ptr;
+
+    int executed = p->cpu_burst_time - p->remaining_time;
+
+    // IO 요청이 남아 있는지 확인
+    if (p->io_request_len > 0 && p->io_request_times[0] == executed) {
+
+        p->is_waiting_io = 1;
+        p->io_remaining_time = p->io_burst_time;
+
+        enqueue(cfg->waitingQueue, p);
+        *running_ptr = NULL;
+
+        for (int i = 1; i < p->io_request_len; i++) {
+            p->io_request_times[i - 1] = p->io_request_times[i];
+        }
+        p->io_request_len--;
+
+        if (p->io_request_len == 0) {
+            free(p->io_request_times);
+            p->io_request_times = NULL;
+        }
+
+        return 1;
+    }
+
+    return 0;
+}
+
+void ProcessIO(SystemConfig* cfg, int current_time) {
+    int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
+    
+    for (int i = 0; i < queue_size; i++) {
+        Process* p = dequeue(cfg->waitingQueue);
+
+        if (p) {
+            p->io_remaining_time--;
+            printf("Time %d: P%d is in I/O  \n", current_time, p->pid);
+
+            if (p->io_remaining_time <= 0) {
+                printf("Time %d: P%d completed I/O and re-entered Ready Queue\n", current_time, p->pid);
+                p->is_waiting_io = 0;
+                enqueue(cfg->readyQueue, p);
+            } else {
+                enqueue(cfg->waitingQueue, p);
+            }
+        }
+    }
+}
+
+
 // ------------------ FCFS ----------------------------
 
 void FCFS(Process* plist, int n, SystemConfig* cfg) {
@@ -185,70 +294,46 @@ void FCFS(Process* plist, int n, SystemConfig* cfg) {
 
         // 도착한 순서대로 readyqueue에 정렬
         for (int i = 0; i < n; i++) {
-            if (plist[i].arrival_time == current_time &&
-                !plist[i].is_completed &&
-                !plist[i].is_waiting_io &&
-                plist[i].remaining_time == plist[i].cpu_burst_time) {
-                printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
+            if (plist[i].arrival_time == current_time && plist[i].remaining_time > 0) {
+                //printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
                 enqueue(cfg->readyQueue, &plist[i]);
             }
         }
 
-        //I/O 처리중인 프로세스들 진행
-        int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
-        for (int i = 0; i < queue_size; i++) {
-            printf("size: %d\n", queue_size);
-            Process* p = dequeue(cfg->waitingQueue);
-            if (p != NULL) {
-                p->io_remaining_time--;
-                printf("Time %d: P%d is in I/O  \n", current_time, p->pid);
-                if (p->io_remaining_time <= 0) {
-                    printf("Time %d: P%d completed I/O and re-entered Ready Queue\n", current_time, p->pid);
-                    p->is_waiting_io = 0;
-                    enqueue(cfg->readyQueue, p);
-                }
-                else {
-                    enqueue(cfg->waitingQueue, p);
-                }
-            }
-        }
-
+        // I/O 처리
+        ProcessIO(cfg, current_time);
 
         //실행할 프로세스 선택 (레디큐에서 꺼내옴)
         if ((running == NULL) && !isQueueEmpty(cfg->readyQueue)) {
             running = dequeue(cfg->readyQueue);
-            run_time = running->cpu_burst_time - running->remaining_time;
         }
 
         // 실행중인 프로세스 처리
         if (running) {
-            printf("Time %d: P%d is running\n", current_time, running->pid);
+            //printf("Time %d: P%d is running\n", current_time, running->pid);
             running->remaining_time--;
-            run_time++;
+            gantt_chart[current_time] = running->pid;
 
-            //I/O 요청 시점 도달
-            if ((run_time == running->io_request_time) && (running->io_request_time >= 0) && (running->io_burst_time > 0) && (running->io_requested == 0)) {
-                running->is_waiting_io += 1;
-                running->io_remaining_time = running->io_burst_time;
-                enqueue(cfg->waitingQueue, running);
-                running = NULL;
-            }
-            // CPU 실행 완료
-            else if (running->remaining_time <= 0) {
-                running->turnaround_time = current_time + 1 - running->arrival_time;
-                running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                running->is_completed = 1;
-                completed++;
-                printf("completed: %d\n", completed);
-                running = NULL;
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    //printf("Time %d: P%d completed\n", current_time, running->pid);
+                    running = NULL;
+                }
             }
         }
         else {
-            printf("Time %d: CPU is idle\n", current_time);
+            //printf("Time %d: CPU is idle\n", current_time)
+                gantt_chart[current_time] = 0;
         }
 
         current_time++;
     }
+    gantt_time = current_time;
+
+    PrintGanttChart(gantt_chart, gantt_time);
     return;
 }
 
@@ -262,29 +347,14 @@ void SJF(Process* plist, int n, SystemConfig* cfg) {
 
     while (completed < n) {
         for (int i = 0; i < n; i++) {
-            if (plist[i].arrival_time == current_time && !plist[i].is_completed) {
+            if (plist[i].arrival_time == current_time && plist[i].remaining_time > 0) {
                 enqueue(cfg->readyQueue, &plist[i]);
-                printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
+               //printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
             }
         }
 
-        int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
-        printf("size: %d\n", queue_size);
-        for (int i = 0; i < queue_size; i++) {   
-            Process* p = dequeue(cfg->waitingQueue);
-            if (p != NULL) {
-                p->io_remaining_time--;
-                printf("Time %d: P%d is in I/O  \n", current_time, p->pid);
-                if (p->io_remaining_time <= 0) {
-                    printf("Time %d: P%d completed I/O and re-entered Ready Queue\n", current_time, p->pid);
-                    p->is_waiting_io = 0;
-                    enqueue(cfg->readyQueue, p);
-                }
-                else {
-                    enqueue(cfg->waitingQueue, p);
-                }
-            }
-        }
+        // I/O 처리
+        ProcessIO(cfg, current_time);
 
         if (!running && !isQueueEmpty(cfg->readyQueue)) {
             // 최소 burst time 프로세스 선택
@@ -305,36 +375,31 @@ void SJF(Process* plist, int n, SystemConfig* cfg) {
         }
 
         if (running) {
-            printf("Time %d: P%d is running\n", current_time, running->pid);
+            //printf("Time %d: P%d is running\n", current_time, running->pid);
             running->remaining_time--;
+            gantt_chart[current_time] = running->pid;
 
             int executed = running->cpu_burst_time - running->remaining_time;
 
-            if (executed == running->io_request_time &&
-                running->io_burst_time > 0 &&
-                running->io_request_time >= 0 &&
-                running->io_requested == 0)
-            {
-                printf("Time %d: P%d requested I/O\n", current_time, running->pid);
-                running->is_waiting_io = 1;
-                running->io_remaining_time = running->io_burst_time;
-                running->io_requested = 1;
-                enqueue(cfg->waitingQueue, running);
-                running = NULL;
-            }else if (running->remaining_time <= 0) {
-                running->turnaround_time = current_time + 1 - running->arrival_time;
-                running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                running->is_completed = 1;
-                completed++;
-                running = NULL;
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    //printf("Time %d: P%d completed\n", current_time, running->pid);
+                    running = NULL;
+                }
             }
         }
         else {
-            printf("Time %d: CPU is idle\n", current_time);
+            //printf("Time %d: CPU is idle\n", current_time);
+            gantt_chart[current_time] = 0;
         }
 
         current_time++;
     }
+    gantt_time = current_time;
+    PrintGanttChart(gantt_chart, gantt_time);
 }
 
 //------------------- Preemptive SJF ---------------------
@@ -348,37 +413,21 @@ void SJF_Preemptive(Process* plist, int n, SystemConfig* cfg) {
     while (completed < n) {
         // 도착한 프로세스 Ready Queue에 추가
         for (int i = 0; i < n; i++) {
-            if (plist[i].arrival_time == current_time && !plist[i].is_completed) {
+            if (plist[i].arrival_time == current_time && plist[i].remaining_time > 0) {
                 enqueue(cfg->readyQueue, &plist[i]);
-                printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
+               // printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
             }
         }
 
         // I/O 처리
-        int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
-        for (int i = 0; i < queue_size; i++) {
-            printf("size: %d\n", queue_size);
-            Process* p = dequeue(cfg->waitingQueue);
-            if (p != NULL) {
-                p->io_remaining_time--;
-                printf("Time %d: P%d is in I/O  \n", current_time, p->pid);
-                if (p->io_remaining_time <= 0) {
-                    printf("Time %d: P%d completed I/O and re-entered Ready Queue\n", current_time, p->pid);
-                    p->is_waiting_io = 0;
-                    enqueue(cfg->readyQueue, p);
-                }
-                else {
-                    enqueue(cfg->waitingQueue, p);
-                }
-            }
-        }
+        ProcessIO(cfg, current_time);
 
         // 가장 남은 시간이 짧은 프로세스 선택
         Process* shortest = NULL;
         int shortest_idx = -1;
         for (int i = cfg->readyQueue->front; i < cfg->readyQueue->rear; i++) {
             Process* p = cfg->readyQueue->data[i];
-            if (!p->is_waiting_io && !p->is_completed) {
+            if (!p->is_waiting_io && p->remaining_time > 0) {
                 if (!shortest || p->remaining_time < shortest->remaining_time) {
                     shortest = p;
                     shortest_idx = i;
@@ -391,37 +440,28 @@ void SJF_Preemptive(Process* plist, int n, SystemConfig* cfg) {
         }
 
         if (running) {
-            printf("Time %d: P%d is running (remaining: %d)\n", current_time, running->pid, running->remaining_time);
+            //printf("Time %d: P%d is running (remaining: %d)\n", current_time, running->pid, running->remaining_time);
             running->remaining_time--;
+            gantt_chart[current_time] = running->pid;
 
-            int executed = running->cpu_burst_time - running->remaining_time;
-
-            // I/O 요청
-            if (executed == running->io_request_time &&
-                running->io_burst_time > 0 &&
-                running->io_request_time >= 0 &&
-                running->io_requested == 0)
-            {
-                printf("Time %d: P%d requested I/O\n", current_time, running->pid);
-                running->is_waiting_io = 1;
-                running->io_remaining_time = running->io_burst_time;
-                running->io_requested = 1;
-                enqueue(cfg->waitingQueue, running);
-                running = NULL;
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    //printf("Time %d: P%d completed\n", current_time, running->pid);
+                    running = NULL;
+                }
             }
-            else if (running->remaining_time <= 0) {
-                running->turnaround_time = current_time + 1 - running->arrival_time;
-                running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                running->is_completed = 1;
-                completed++;
-                running = NULL;
-            }
-        } /*else {
-            printf("Time %d: CPU is idle\n", current_time);
-        }*/
+        } else {
+            //printf("Time %d: CPU is idle\n", current_time);
+            gantt_chart[current_time] = 0;
+        }
 
         current_time++;
     }
+    gantt_time = current_time;
+    PrintGanttChart(gantt_chart, gantt_time);
 
 }
 
@@ -437,30 +477,14 @@ void Priority_NonPreemptive(Process* plist, int n, SystemConfig* cfg) {
 
     while (completed < n) {
         for (int i = 0; i < n; i++) {
-            if (plist[i].arrival_time == current_time && !plist[i].is_completed) {
+            if (plist[i].arrival_time == current_time && plist[i].remaining_time > 0) {
                 enqueue(cfg->readyQueue, &plist[i]);
-                printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
+                //printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
             }
         }
 
         // I/O 처리
-        int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
-        for (int i = 0; i < queue_size; i++) {
-            printf("size: %d\n", queue_size);
-            Process* p = dequeue(cfg->waitingQueue);
-            if (p != NULL) {
-                p->io_remaining_time--;
-                printf("Time %d: P%d is in I/O  \n", current_time, p->pid);
-                if (p->io_remaining_time <= 0) {
-                    printf("Time %d: P%d completed I/O and re-entered Ready Queue\n", current_time, p->pid);
-                    p->is_waiting_io = 0;
-                    enqueue(cfg->readyQueue, p);
-                }
-                else {
-                    enqueue(cfg->waitingQueue, p);
-                }
-            }
-        }
+        ProcessIO(cfg, current_time);
 
         //highest priority 숫자 낮을 수록 우선순위 높음
         if (!running && !isQueueEmpty(cfg->readyQueue)) {
@@ -479,36 +503,28 @@ void Priority_NonPreemptive(Process* plist, int n, SystemConfig* cfg) {
         }
 
         if (running) {
-            printf("Time %d: P%d is running\n", current_time, running->pid);
+            //printf("Time %d: P%d is running\n", current_time, running->pid);
             running->remaining_time--;
+            gantt_chart[current_time] = running->pid;
 
-            int executed = running->cpu_burst_time - running->remaining_time;
-
-            if (executed == running->io_request_time &&
-                running->io_burst_time > 0 &&
-                running->io_request_time >= 0 &&
-                running->io_requested == 0)
-            {
-                printf("Time %d: P%d requested I/O\n", current_time, running->pid);
-                running->is_waiting_io = 1;
-                running->io_remaining_time = running->io_burst_time;
-                running->io_requested = 1;
-                enqueue(cfg->waitingQueue, running);
-                running = NULL;
-            }
-            else if (running->remaining_time <= 0) {
-                running->turnaround_time = current_time + 1 - running->arrival_time;
-                running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                running->is_completed = 1;
-                completed++;
-                running = NULL;
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    //printf("Time %d: P%d completed\n", current_time, running->pid);
+                    running = NULL;
+                }
             }
         } else {
-            printf("Time %d: CPU is idle\n", current_time);
+            //printf("Time %d: CPU is idle\n", current_time);
+            gantt_chart[current_time] = 0;
         }
 
         current_time++;
     }
+    gantt_time = current_time;
+    PrintGanttChart(gantt_chart, gantt_time);
 }
 
 //------------------- Preemptive Priority -----------------
@@ -523,30 +539,14 @@ void Priority_Preemptive(Process* plist, int n, SystemConfig* cfg) {
 
     while (completed < n) {
         for (int i = 0; i < n; i++) {
-            if (plist[i].arrival_time == current_time && !plist[i].is_completed) {
+            if (plist[i].arrival_time == current_time && plist[i].remaining_time > 0) {
                 enqueue(cfg->readyQueue, &plist[i]);
-                printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
+                //printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
             }
         }
 
         // I/O 처리
-        int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
-        for (int i = 0; i < queue_size; i++) {
-            printf("size: %d\n", queue_size);
-            Process* p = dequeue(cfg->waitingQueue);
-            if (p != NULL) {
-                p->io_remaining_time--;
-                printf("Time %d: P%d is in I/O  \n", current_time, p->pid);
-                if (p->io_remaining_time <= 0) {
-                    printf("Time %d: P%d completed I/O and re-entered Ready Queue\n", current_time, p->pid);
-                    p->is_waiting_io = 0;
-                    enqueue(cfg->readyQueue, p);
-                }
-                else {
-                    enqueue(cfg->waitingQueue, p);
-                }
-            }
-        }
+        ProcessIO(cfg, current_time);
 
 
         // highest priority 숫자 낮을 수록 우선순위 높음
@@ -554,7 +554,7 @@ void Priority_Preemptive(Process* plist, int n, SystemConfig* cfg) {
         int top_idx = -1;
         for (int i = cfg->readyQueue->front; i < cfg->readyQueue->rear; i++) {
             Process* p = cfg->readyQueue->data[i];
-            if (!p->is_completed && !p->is_waiting_io) {
+            if (p->remaining_time > 0 && !p->is_waiting_io) {
                 if (!top || p->priority < top->priority) {
                     top = p;
                     top_idx = i;
@@ -567,7 +567,7 @@ void Priority_Preemptive(Process* plist, int n, SystemConfig* cfg) {
 
             if (running && top->priority < running->priority) {
                 enqueue(cfg->readyQueue, running);
-                printf("Time %d: P%d preempted by P%d\n", current_time, running->pid, top->pid);
+                //printf("Time %d: P%d preempted by P%d\n", current_time, running->pid, top->pid);
             }
 
             // ReadyQueue에서 top 제거
@@ -580,38 +580,29 @@ void Priority_Preemptive(Process* plist, int n, SystemConfig* cfg) {
         }
 
         if (running) {
-            printf("Time %d: P%d is running (priority: %d)\n", current_time, running->pid, running->priority);
+            //printf("Time %d: P%d is running (priority: %d)\n", current_time, running->pid, running->priority);
             running->remaining_time--;
+            gantt_chart[current_time] = running->pid;
 
-            int executed = running->cpu_burst_time - running->remaining_time;
-
-            if (executed == running->io_request_time &&
-                running->io_burst_time > 0 &&
-                running->io_request_time >= 0 &&
-                running->io_requested == 0)
-            {
-                printf("Time %d: P%d requested I/O\n", current_time, running->pid);
-                running->is_waiting_io = 1;
-                running->io_remaining_time = running->io_burst_time;
-                running->io_requested = 1;
-                enqueue(cfg->waitingQueue, running);
-                running = NULL;
-            }
-            else if (running->remaining_time <= 0) {
-                running->turnaround_time = current_time + 1 - running->arrival_time;
-                running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                running->is_completed = 1;
-                completed++;
-                printf("completed: %d\n", completed);
-                running = NULL;
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    //printf("Time %d: P%d completed\n", current_time, running->pid);
+                    running = NULL;
+                }
             }
         }
         else {
-            printf("Time %d: CPU is idle\n", current_time);
+            //printf("Time %d: CPU is idle\n", current_time);
+            gantt_chart[current_time] = 0;
         }
 
         current_time++;
     }
+    gantt_time = current_time;
+    PrintGanttChart(gantt_chart, gantt_time);
 }
 
 //----------------- Round Robin ---------------------
@@ -627,30 +618,14 @@ void RoundRobin(Process* plist, int n, SystemConfig* cfg, int time_quantum) {
 
     while (completed < n) {
         for (int i = 0; i < n; i++) {
-            if (plist[i].arrival_time == current_time && !plist[i].is_completed) {
+            if (plist[i].arrival_time == current_time && plist[i].remaining_time > 0) {
                 enqueue(cfg->readyQueue, &plist[i]);
-                printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
+                //printf("Time %d: Enqueuing P%d\n", current_time, plist[i].pid);
             }
         }
 
         // I/O 처리
-        int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
-        for (int i = 0; i < queue_size; i++) {
-            printf("size: %d\n", queue_size);
-            Process* p = dequeue(cfg->waitingQueue);
-            if (p != NULL) {
-                p->io_remaining_time--;
-                printf("Time %d: P%d is in I/O  \n", current_time, p->pid);
-                if (p->io_remaining_time <= 0) {
-                    printf("Time %d: P%d completed I/O and re-entered Ready Queue\n", current_time, p->pid);
-                    p->is_waiting_io = 0;
-                    enqueue(cfg->readyQueue, p);
-                }
-                else {
-                    enqueue(cfg->waitingQueue, p);
-                }
-            }
-        }
+        ProcessIO(cfg, current_time);
 
         if (!running && !isQueueEmpty(cfg->readyQueue)) {
             running = dequeue(cfg->readyQueue);
@@ -658,38 +633,30 @@ void RoundRobin(Process* plist, int n, SystemConfig* cfg, int time_quantum) {
         }
 
         if (running) {
-            printf("Time %d: P%d is running (remaining: %d)\n", current_time, running->pid, running->remaining_time);
+            //printf("Time %d: P%d is running (remaining: %d)\n", current_time, running->pid, running->remaining_time);
             running->remaining_time--;
             time_slice++;
+            gantt_chart[current_time] = running->pid;
 
-            int executed = running->cpu_burst_time - running->remaining_time;
-
-            if (executed == running->io_request_time &&
-                running->io_burst_time > 0 &&
-                running->io_request_time >= 0 &&
-                running->io_requested == 0)
-            {
-                printf("Time %d: P%d requested I/O\n", current_time, running->pid);
-                running->is_waiting_io = 1;
-                running->io_remaining_time = running->io_burst_time;
-                running->io_requested = 1;
-                enqueue(cfg->waitingQueue, running);
-                running = NULL;
-            }
-            else if (running->remaining_time <= 0) {
-                running->turnaround_time = current_time + 1 - running->arrival_time;
-                running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                running->is_completed = 1;
-                completed++;
-                running = NULL;
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    //printf("Time %d: P%d completed\n", current_time, running->pid);
+                    running = NULL;
+                }
             }
         }
         else {
-            printf("Time %d: CPU is idle\n", current_time);
+            //printf("Time %d: CPU is idle\n", current_time);
+            gantt_chart[current_time] = 0;
         }
 
         current_time++;
     }
+    gantt_time = current_time;
+    PrintGanttChart(gantt_chart, gantt_time);
 }
 
 
