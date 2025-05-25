@@ -155,10 +155,10 @@ Process* Create_Process(int n) {
         //오름차순 정렬
         for (int a = 0; a < io_count - 1; a++) {
             for (int b = a + 1; b < io_count; b++) {
-                if (io_times[a] > io_times[b]) {
-                    int tmp = io_times[a];
-                    io_times[a] = io_times[b];
-                    io_times[b] = tmp;
+                if (plist[i].io_request_times[a] > plist[i].io_request_times[b]) {
+                    int tmp = plist[i].io_request_times[a];
+                    plist[i].io_request_times[a] = plist[i].io_request_times[b];
+                    plist[i].io_request_times[b] = tmp;
                 }
             }
         }
@@ -188,18 +188,17 @@ Process* clone_process_list(Process* original, int n) {
 
 void Print_Processes(Process* plist, int n) {
 
-    printf("PID\tArrival\tCPU\tIO\tIO_Req_Times\tPriority\n");
+    printf("PID\tArrival\tCPU\t(IO_Req_Times, IO_Burst_Time)\tPriority\n");
 
     for (int i = 0; i < n; i++) {
-        printf("%d\t%d\t%d\t%d\t",
+        printf("%d\t%d\t%d\t",
             plist[i].pid,
             plist[i].arrival_time,
-            plist[i].cpu_burst_time,
-            plist[i].io_burst_time);
+            plist[i].cpu_burst_time);
 
         printf("[");
         for (int j = 0; j < plist[i].io_request_len; j++) {
-            printf("%d", plist[i].io_request_times[j]);
+            printf("(%d, %d)", plist[i].io_request_times[j], plist[i].io_burst_times[j]);
             if (j < plist[i].io_request_len - 1) printf(", ");
         }
         printf("]");
@@ -268,7 +267,7 @@ int HandleIORequest(Process** running_ptr, SystemConfig* cfg, int current_time) 
 
         for (int i = 1; i < p->io_request_len; i++) {
             p->io_request_times[i - 1] = p->io_request_times[i];
-            p->io_bursts[i - 1] = p->io_burst_times[i];
+            p->io_burst_times[i - 1] = p->io_burst_times[i];
         }
         p->io_request_len--;
 
@@ -702,6 +701,7 @@ void RoundRobin(Process* plist, int n, SystemConfig* cfg, int time_quantum) {
                     }
                 }
             }
+        }
         else {
             gantt_chart[current_time] = 0;
         }
