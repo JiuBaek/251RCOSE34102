@@ -6,7 +6,7 @@
 #define MAX_NAME_LEN 16
 #define MAX_PROCESSES 100
 #define MAX_TIME 1000
-#define AGING_INTERVAL 5cd
+#define AGING_INTERVAL 5
 
 int gantt_chart[MAX_TIME];
 int gantt_time = 0;
@@ -57,6 +57,8 @@ void remove_from_circular_queue(Queue* q, int idx) {
         idx = next;
     }
     q->rear = (q->rear - 1 + q->capacity) % q->capacity;
+
+    return;
 }
 
 // ------------------ Queue 함수 ------------------
@@ -72,6 +74,8 @@ Queue* createQueue(int capacity) {
 void destroyQueue(Queue* q) {
     free(q->data);
     free(q);
+
+    return;
 }
 
 int isQueueEmpty(Queue* q) {
@@ -87,6 +91,8 @@ void enqueue(Queue* q, Process* p) {
     else {
         printf("Queue is full, cannot enqueue P%d\n", p->pid);
     }
+
+    return;
 }
 
 Process* dequeue(Queue* q) {
@@ -110,6 +116,8 @@ void DestroyConfig(SystemConfig* cfg) {
     destroyQueue(cfg->readyQueue);
     destroyQueue(cfg->waitingQueue);
     free(cfg);
+
+    return;
 }
 
 // ------------------ Process create and print ------------------
@@ -198,6 +206,8 @@ void Print_Processes(Process* plist, int n) {
 
         printf("\t%d\n", plist[i].priority);
     }
+
+    return;
 }
 
 //--------------------- Gantt Chart --------------------------
@@ -216,6 +226,8 @@ void PrintGanttChart(int* chart, int time) {
         printf("%5d", i);
     }
     printf("\n");
+
+    return;
 }
 
 //------------------- Evaluation fuction -----------------------
@@ -235,6 +247,8 @@ void Evaluation(Process* plist, int n, const char* name) {
     printf("\n Evaluation for [%s]\n", name);
     printf("Average Waiting Time: %.2f\n", avg_wt);
     printf("Average Turnaround Time: %.2f\n", avg_tt);
+
+    return;
 }
 
 //------------------ I/O --------------------------- 
@@ -271,12 +285,11 @@ int HandleIORequest(Process** running_ptr, SystemConfig* cfg, int current_time) 
     return 0;
 }
 
-void ProcessIO(SystemConfig* cfg, int current_time, int* enqueued_this_tick) {
+void ProcessIO(SystemConfig* cfg, int current_time) {
     int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
 
     for (int i = 0; i < queue_size; i++) {
         Process* p = dequeue(cfg->waitingQueue);
-        p->remaining_time = p->io_burst_times[0];
 
         if (p) {
             p->io_remaining_time--;
@@ -284,13 +297,14 @@ void ProcessIO(SystemConfig* cfg, int current_time, int* enqueued_this_tick) {
             if (p->io_remaining_time <= 0) {
                 p->is_waiting_io = 0;
                 enqueue(cfg->readyQueue, p);
-                if (enqueued_this_tick) (*enqueued_this_tick)++;
             }
             else {
                 enqueue(cfg->waitingQueue, p);
             }
         }
     }
+
+    return;
 }
 
 
@@ -309,7 +323,8 @@ void Aging(Queue* q) {
             p->in_the_ready = 0;
         }
     }
-
+    
+    return;
 }
 
 // ------------------ FCFS ----------------------------
@@ -333,36 +348,31 @@ void FCFS(Process* plist, int n, SystemConfig* cfg) {
             }
         }
 
-        if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
-            // I/O 처리
-            ProcessIO(cfg, current_time, NULL); // 레디큐에 실행할 게 없으면, process io 한 후 enqueue한게 바로 사용됨, 그거 방지
+
+        //실행할 프로세스 선택
+        if ((running == NULL) && !isQueueEmpty(cfg->readyQueue)) {
+            running = dequeue(cfg->readyQueue);
         }
-        else {
-            ProcessIO(cfg, current_time, NULL);
 
-            //실행할 프로세스 선택
-            if ((running == NULL) && !isQueueEmpty(cfg->readyQueue)) {
-                running = dequeue(cfg->readyQueue);
-            }
+        // 실행중인 프로세스 처리
+        if (running) {
+            running->remaining_time--;
+            gantt_chart[current_time] = running->pid;
 
-            // 실행중인 프로세스 처리
-            if (running) {
-                running->remaining_time--;
-                gantt_chart[current_time] = running->pid;
-
-                if (!HandleIORequest(&running, cfg, current_time)) {
-                    if (running && running->remaining_time <= 0) {
-                        running->turnaround_time = current_time + 1 - running->arrival_time;
-                        running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                        completed++;
-                        running = NULL;
-                    }
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    running = NULL;
                 }
             }
-            else {
-                //printf("Time %d: CPU is idle\n", current_time);
-            }
         }
+        else {
+            gantt_chart[current_time] = 0;
+        }
+
+        ProcessIO(cfg, current_time);
 
         current_time++;
     }
@@ -388,57 +398,53 @@ void SJF(Process* plist, int n, SystemConfig* cfg) {
             }
         }
 
-        if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
-            // I/O 처리
-            ProcessIO(cfg, current_time, NULL);
+
+        if (!running && !isQueueEmpty(cfg->readyQueue)) {
+            // 최소 burst time 프로세스 선택
+            int size = (cfg->readyQueue->rear - cfg->readyQueue->front + cfg->readyQueue->capacity) % cfg->readyQueue->capacity;
+            int min_idx = cfg->readyQueue->front;
+
+            for (int i = 1; i < size; i++) {
+                int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
+                if (cfg->readyQueue->data[idx]->cpu_burst_time < cfg->readyQueue->data[min_idx]->cpu_burst_time) {
+                    min_idx = idx;
+                }
+
+            }
+
+            Process* selected = cfg->readyQueue->data[min_idx];
+            remove_from_circular_queue(cfg->readyQueue, min_idx);
+
+            running = selected;
+        }
+
+        if (running) {
+            running->remaining_time--;
+            gantt_chart[current_time] = running->pid;
+
+            int executed = running->cpu_burst_time - running->remaining_time;
+
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    running = NULL;
+                }
+            }
         }
         else {
-            // I/O 처리
-            ProcessIO(cfg, current_time, NULL);
-
-            if (!running && !isQueueEmpty(cfg->readyQueue)) {
-                // 최소 burst time 프로세스 선택
-                int size = (cfg->readyQueue->rear - cfg->readyQueue->front + cfg->readyQueue->capacity) % cfg->readyQueue->capacity;
-                int min_idx = cfg->readyQueue->front;
-
-                for (int i = 1; i < size; i++) {
-                    int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
-                    if (cfg->readyQueue->data[idx]->cpu_burst_time < cfg->readyQueue->data[min_idx]->cpu_burst_time) {
-                        min_idx = idx;
-                    }
-                    
-                }
-
-                Process* selected = cfg->readyQueue->data[min_idx];
-                remove_from_circular_queue(cfg->readyQueue, min_idx);
-
-                running = selected;
-            }
-
-            if (running) {
-                running->remaining_time--;
-                gantt_chart[current_time] = running->pid;
-
-                int executed = running->cpu_burst_time - running->remaining_time;
-
-                if (!HandleIORequest(&running, cfg, current_time)) {
-                    if (running && running->remaining_time <= 0) {
-                        running->turnaround_time = current_time + 1 - running->arrival_time;
-                        running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                        completed++;
-                        running = NULL;
-                    }
-                }
-            }
-            else {
-                gantt_chart[current_time] = 0;
-            }
+            gantt_chart[current_time] = 0;
         }
+
+        ProcessIO(cfg, current_time);
 
         current_time++;
     }
     gantt_time = current_time;
     PrintGanttChart(gantt_chart, gantt_time);
+
+    return;
 }
 
 //------------------- Preemptive SJF ---------------------
@@ -450,79 +456,69 @@ void SJF_Preemptive(Process* plist, int n, SystemConfig* cfg) {
     printf("\n SJF (Preemptive) \n");
 
     while (completed < n) {
-        int enqueued_this_tick = 0;
 
-        // 도착한 프로세스 Ready Queue에 추가
+        // Ready Queue에 추가
         for (int i = 0; i < n; i++) {
             if (plist[i].arrival_time == current_time && plist[i].remaining_time > 0) {
                 enqueue(cfg->readyQueue, &plist[i]);
-                enqueued_this_tick++;
             }
         }
 
-        if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
-            // I/O 처리
-            ProcessIOForPreemptive(cfg, current_time, &enqueued_this_tick);
+        // shortest job 선택
+        if (!isQueueEmpty(cfg->readyQueue)) {
+            int size = (cfg->readyQueue->rear - cfg->readyQueue->front + cfg->readyQueue->capacity) % cfg->readyQueue->capacity;
+            int min_idx = -1;
+
+
+            for (int i = 0; i < size; i++) {
+                int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
+
+                Process* p = cfg->readyQueue->data[idx];
+                if (!p->is_waiting_io && p->remaining_time > 0) {
+                    if (min_idx == -1 || p->remaining_time < cfg->readyQueue->data[min_idx]->remaining_time) {
+                        min_idx = idx;
+                    }
+                }
+            }
+
+            if (min_idx != -1) {
+                Process* shortest = cfg->readyQueue->data[min_idx];
+
+                if (running == NULL || shortest->remaining_time < running->remaining_time) {
+                    if (running) {
+                        enqueue(cfg->readyQueue, running);
+                    }
+                    remove_from_circular_queue(cfg->readyQueue, min_idx);
+                    running = shortest;
+                }
+            }
+        }
+
+        if (running) {
+            running->remaining_time--;
+            gantt_chart[current_time] = running->pid;
+
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    running = NULL;
+                }
+            }
         }
         else {
-            // I/O 처리
-            ProcessIOForPreemptive(cfg, current_time, &enqueued_this_tick);
-
-            // shortest job 선택
-            if (!isQueueEmpty(cfg->readyQueue)) {
-                int size = (cfg->readyQueue->rear - cfg->readyQueue->front + cfg->readyQueue->capacity) % cfg->readyQueue->capacity;
-                int min_idx = -1;
-
-                int valid_size = size - enqueued_this_tick;
-                if (valid_size < 0) valid_size = 0;
-
-                for (int i = 0; i < size; i++) {
-                    int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
-
-                    Process* p = cfg->readyQueue->data[idx];
-                    if (!p->is_waiting_io && p->remaining_time > 0) {
-                        if (min_idx == -1 || p->remaining_time < cfg->readyQueue->data[min_idx]->remaining_time) {
-                            min_idx = idx;
-                        }
-                    }
-                }
-
-                if (min_idx != -1) {
-                    Process* shortest = cfg->readyQueue->data[min_idx];
-
-                    if (running == NULL || shortest->remaining_time < running->remaining_time) {
-                        if (running) {
-                            enqueue(cfg->readyQueue, running);
-                        }
-                        remove_from_circular_queue(cfg->readyQueue, min_idx);
-                        running = shortest;
-                    }
-                }
-            }
-
-            if (running) {
-                running->remaining_time--;
-                gantt_chart[current_time] = running->pid;
-
-                if (!HandleIORequest(&running, cfg, current_time)) {
-                    if (running && running->remaining_time <= 0) {
-                        running->turnaround_time = current_time + 1 - running->arrival_time;
-                        running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                        completed++;
-                        running = NULL;
-                    }
-                }
-            }
-            else {
-                gantt_chart[current_time] = 0;
-            }
+            gantt_chart[current_time] = 0;
         }
+
+        ProcessIO(cfg, current_time);
 
         current_time++;
     }
     gantt_time = current_time;
     PrintGanttChart(gantt_chart, gantt_time);
 
+    return;
 }
 
 //------------------- Nonpreemptive Priority ------------------
@@ -542,55 +538,50 @@ void Priority_NonPreemptive(Process* plist, int n, SystemConfig* cfg) {
             }
         }
 
-        if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
-            // I/O 처리
-            ProcessIO(cfg, current_time, NULL);
+        Aging(cfg->readyQueue);
+
+        //highest priority 숫자 낮을 수록 우선순위 높음
+        if (!running && !isQueueEmpty(cfg->readyQueue)) {
+            int size = (cfg->readyQueue->rear - cfg->readyQueue->front + cfg->readyQueue->capacity) % cfg->readyQueue->capacity;
+            int min_idx = cfg->readyQueue->front;
+
+            for (int i = 1; i < size; i++) {
+                int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
+                if (cfg->readyQueue->data[idx]->priority < cfg->readyQueue->data[min_idx]->priority) {
+                    min_idx = idx;
+                }
+            }
+
+            running = cfg->readyQueue->data[min_idx];
+            remove_from_circular_queue(cfg->readyQueue, min_idx);
+        }
+
+        if (running) {
+            running->remaining_time--;
+            gantt_chart[current_time] = running->pid;
+
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    running = NULL;
+                }
+            }
         }
         else {
-            // I/O 처리
-            ProcessIO(cfg, current_time, NULL);
-
-            Aging(cfg->readyQueue);
-
-            //highest priority 숫자 낮을 수록 우선순위 높음
-            if (!running && !isQueueEmpty(cfg->readyQueue)) {
-                int size = (cfg->readyQueue->rear - cfg->readyQueue->front + cfg->readyQueue->capacity) % cfg->readyQueue->capacity;
-                int min_idx = cfg->readyQueue->front;
-
-                for (int i = 1; i < size; i++) {
-                    int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
-                    if (cfg->readyQueue->data[idx]->priority < cfg->readyQueue->data[min_idx]->priority) {
-                        min_idx = idx;
-                    }
-                }
-
-                running = cfg->readyQueue->data[min_idx];
-                remove_from_circular_queue(cfg->readyQueue, min_idx);
-            }
-
-            if (running) {
-                running->remaining_time--;
-                gantt_chart[current_time] = running->pid;
-
-                if (!HandleIORequest(&running, cfg, current_time)) {
-                    if (running && running->remaining_time <= 0) {
-                        running->turnaround_time = current_time + 1 - running->arrival_time;
-                        running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                        completed++;
-                        running = NULL;
-                    }
-                }
-            }
-            else {
-                gantt_chart[current_time] = 0;
-            }
+            gantt_chart[current_time] = 0;
         }
+
+        ProcessIO(cfg, current_time);
 
 
         current_time++;
     }
     gantt_time = current_time;
     PrintGanttChart(gantt_chart, gantt_time);
+
+    return;
 }
 
 //------------------- Preemptive Priority -----------------
@@ -605,73 +596,68 @@ void Priority_Preemptive(Process* plist, int n, SystemConfig* cfg) {
 
     while (completed < n) {
 
-        int enqueued_this_tick = 0;
 
         for (int i = 0; i < n; i++) {
             if (plist[i].arrival_time == current_time && plist[i].remaining_time > 0) {
                 enqueue(cfg->readyQueue, &plist[i]);
-                enqueued_this_tick++;
             }
         }
 
-        if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
-            ProcessIO(cfg, current_time, &enqueued_this_tick);
+        Aging(cfg->readyQueue);
+
+        Process* min = NULL;
+        int min_idx = -1;
+
+        int size = (cfg->readyQueue->rear - cfg->readyQueue->front + cfg->readyQueue->capacity) % cfg->readyQueue->capacity;
+
+        for (int i = 0; i < size; i++) {
+            int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
+            Process* p = cfg->readyQueue->data[idx];
+
+            if (p->remaining_time > 0 && !p->is_waiting_io) {
+                if (!min || p->priority < min->priority) {
+                    min = p;
+                    min_idx = idx;
+                }
+            }
+        }
+
+
+        if (min && (running == NULL || min->priority < running->priority)) {
+
+            if (running && min->priority < running->priority) {
+                enqueue(cfg->readyQueue, running);
+            }
+
+            remove_from_circular_queue(cfg->readyQueue, min_idx);
+            running = min;
+        }
+
+        if (running) {
+            running->remaining_time--;
+            gantt_chart[current_time] = running->pid;
+
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
+                    running->turnaround_time = current_time + 1 - running->arrival_time;
+                    running->waiting_time = running->turnaround_time - running->cpu_burst_time;
+                    completed++;
+                    running = NULL;
+                }
+            }
         }
         else {
-            // I/O 처리
-            ProcessIO(cfg, current_time, &enqueued_this_tick);
-            Aging(cfg->readyQueue);
-
-            Process* top = NULL;
-            int top_idx = -1;
-
-            int size = (cfg->readyQueue->rear - cfg->readyQueue->front + cfg->readyQueue->capacity) % cfg->readyQueue->capacity;
-
-            for (int i = 0; i < size; i++) {
-                int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
-                Process* p = cfg->readyQueue->data[idx];
-
-                if (p->remaining_time > 0 && !p->is_waiting_io) {
-                    if (!top || p->priority < top->priority) {
-                        top = p;
-                        top_idx = idx;
-                    }
-                }
-            }
-
-
-            if (top && (running == NULL || top->priority < running->priority)) {
-
-                if (running && top->priority < running->priority) {
-                    enqueue(cfg->readyQueue, running);
-                }
-
-                remove_from_circular_queue(cfg->readyQueue, top_idx);
-                running = top;
-            }
-
-            if (running) {
-                running->remaining_time--;
-                gantt_chart[current_time] = running->pid;
-
-                if (!HandleIORequest(&running, cfg, current_time)) {
-                    if (running && running->remaining_time <= 0) {
-                        running->turnaround_time = current_time + 1 - running->arrival_time;
-                        running->waiting_time = running->turnaround_time - running->cpu_burst_time;
-                        completed++;
-                        running = NULL;
-                    }
-                }
-            }
-            else {
-                gantt_chart[current_time] = 0;
-            }
+            gantt_chart[current_time] = 0;
         }
+
+        ProcessIO(cfg, current_time);
 
         current_time++;
     }
     gantt_time = current_time;
     PrintGanttChart(gantt_chart, gantt_time);
+
+    return;
 }
 
 //----------------- Round Robin ---------------------
@@ -692,44 +678,42 @@ void RoundRobin(Process* plist, int n, SystemConfig* cfg, int time_quantum) {
             }
         }
 
-        if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
-            ProcessIO(cfg, current_time, NULL);
+        if (!running && !isQueueEmpty(cfg->readyQueue)) {
+            running = dequeue(cfg->readyQueue);
+            time_slice = 0;
         }
-        else {
-            // I/O 처리
-            ProcessIO(cfg, current_time, NULL);
 
-            if (!running && !isQueueEmpty(cfg->readyQueue)) {
-                running = dequeue(cfg->readyQueue);
-                time_slice = 0;
-            }
+        if (running) {
+            running->remaining_time--;
+            time_slice++;
+            gantt_chart[current_time] = running->pid;
 
-            if (running) {
-                running->remaining_time--;
-                time_slice++;
-                gantt_chart[current_time] = running->pid;
-
-                if(HandleIORequest(&running, cfg, current_time)) {
-                    running = NULL;
-                } else if (running->remaining_time <= 0) {
+            if (!HandleIORequest(&running, cfg, current_time)) {
+                if (running && running->remaining_time <= 0) {
                     running->turnaround_time = current_time + 1 - running->arrival_time;
                     running->waiting_time = running->turnaround_time - running->cpu_burst_time;
                     completed++;
                     running = NULL;
-                } else if (time_slice >= time_quantum) {
-                    enqueue(cfg->readyQueue, running);
-                    running = NULL;
+                }
+                else {
+                    if (time_slice >= time_quantum) {
+                        enqueue(cfg->readyQueue, running);
+                        running = NULL;
+                    }
                 }
             }
-            else {
-                gantt_chart[current_time] = 0;
-            }
+        else {
+            gantt_chart[current_time] = 0;
         }
+
+        ProcessIO(cfg, current_time);
 
         current_time++;
     }
     gantt_time = current_time;
     PrintGanttChart(gantt_chart, gantt_time);
+
+    return;
 }
 
 
@@ -788,7 +772,7 @@ int main() {
     free(plist4);
     free(plist5);
     free(plist6);
-
+   
 
     free(original);
     return 0;
