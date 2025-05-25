@@ -6,7 +6,7 @@
 #define MAX_NAME_LEN 16
 #define MAX_PROCESSES 100
 #define MAX_TIME 1000
-#define AGING_INTERVAL 5
+#define AGING_INTERVAL 5cd
 
 int gantt_chart[MAX_TIME];
 int gantt_time = 0;
@@ -18,7 +18,7 @@ typedef struct {
     int pid;                  
     int arrival_time;         
     int cpu_burst_time;       
-    int io_burst_time;        
+    int* io_burst_times;        
     int* io_request_times; //언제 I/O 가 실행될 것 인가 (다중 시도 중, 1~3회)
     int io_request_len;
     int io_remaining_time;
@@ -122,39 +122,42 @@ Process* Create_Process(int n) {
     for (int i = 0; i < n; i++) {
         plist[i].pid = i + 1;
         plist[i].arrival_time = rand() % 10;
-        plist[i].cpu_burst_time = 3 + rand() % 18; // 3 ~ 20
-        plist[i].io_burst_time = 1 + rand() % 5;
+        plist[i].cpu_burst_time = 3 + rand() % 18;
         plist[i].priority = 1 + rand() % 5;
 
         //io 정하기
-        plist[i].io_remaining_time = plist[i].io_burst_time;
+        plist[i].io_remaining_time = 0;
         int io_count = 1 + (rand() % 3);  // 1~3회
         plist[i].io_request_len = io_count;
         plist[i].io_request_times = malloc(sizeof(int) * io_count);
 
-        int max_time = plist[i].cpu_burst_time - 1;
-        int io_burst = plist[i].io_burst_time;
-        int prev_time = 0;
+        int max_time = plist[i].cpu_burst_time;
         int j = 0;
+        int used[20] = { 0 };
 
-        for (int attempt = 0; attempt < io_count * 5; attempt++) {
-            int earliest = prev_time + io_burst;
-            if (earliest >= max_time) break;
+        while (j < io_count) {
+            int t = 1 + rand() % (max_time - 1);
+            if (used[t] == 0) {
+                used[t] = 1;
+                plist[i].io_request_times[j++] = t;
 
-            int t = earliest + rand() % (max_time - earliest + 1);
-            plist[i].io_request_times[j] = t;
-            prev_time = t;
-            j++;
-
-            if (j >= io_count) break;
+            }
         }
 
-        if (j == 0) {
-            plist[i].io_request_times[0] = 1;
-            plist[i].io_request_len = 1;
+        //오름차순 정렬
+        for (int a = 0; a < io_count - 1; a++) {
+            for (int b = a + 1; b < io_count; b++) {
+                if (io_times[a] > io_times[b]) {
+                    int tmp = io_times[a];
+                    io_times[a] = io_times[b];
+                    io_times[b] = tmp;
+                }
+            }
         }
-        else {
-            plist[i].io_request_len = j;
+
+        plist[i].io_burst_times = malloc(sizeof(int) * io_count);
+        for (int k = 0; k < io_count; k++) {
+            plist[i].io_burst_times[k] = 1 + rand() % 5;
         }
 
         //simulation
@@ -244,19 +247,22 @@ int HandleIORequest(Process** running_ptr, SystemConfig* cfg, int current_time) 
     if (p->io_request_len > 0 && p->io_request_times[0] == executed) {
 
         p->is_waiting_io = 1;
-        p->io_remaining_time = p->io_burst_time;
+        p->io_remaining_time = p->io_burst_times[0];
 
         enqueue(cfg->waitingQueue, p);
         *running_ptr = NULL;
 
         for (int i = 1; i < p->io_request_len; i++) {
             p->io_request_times[i - 1] = p->io_request_times[i];
+            p->io_bursts[i - 1] = p->io_burst_times[i];
         }
         p->io_request_len--;
 
         if (p->io_request_len == 0) {
             free(p->io_request_times);
+            free(p->io_burst_times);
             p->io_request_times = NULL;
+            p->io_burst_times = NULL;
         }
 
         return 1;
@@ -265,35 +271,16 @@ int HandleIORequest(Process** running_ptr, SystemConfig* cfg, int current_time) 
     return 0;
 }
 
-void ProcessIO(SystemConfig* cfg, int current_time) {
-    int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
-    
-    for (int i = 0; i < queue_size; i++) {
-        Process* p = dequeue(cfg->waitingQueue);
-
-        if (p) {
-            p->io_remaining_time--;
-
-            if (p->io_remaining_time <= 0) {
-                p->is_waiting_io = 0;
-                enqueue(cfg->readyQueue, p);
-            } else {
-                enqueue(cfg->waitingQueue, p);
-            }
-        }
-    }
-    return;
-}
-
-void ProcessIOForPreemptive(SystemConfig* cfg, int current_time, int* enqueued_this_tick) {
+void ProcessIO(SystemConfig* cfg, int current_time, int* enqueued_this_tick) {
     int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
 
     for (int i = 0; i < queue_size; i++) {
         Process* p = dequeue(cfg->waitingQueue);
+        p->remaining_time = p->io_burst_times[0];
 
         if (p) {
             p->io_remaining_time--;
-
+            
             if (p->io_remaining_time <= 0) {
                 p->is_waiting_io = 0;
                 enqueue(cfg->readyQueue, p);
@@ -348,10 +335,10 @@ void FCFS(Process* plist, int n, SystemConfig* cfg) {
 
         if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
             // I/O 처리
-            ProcessIO(cfg, current_time); // 레디큐에 실행할 게 없으면, process io 한 후 enqueue한게 바로 사용됨, 그거 방지
+            ProcessIO(cfg, current_time, NULL); // 레디큐에 실행할 게 없으면, process io 한 후 enqueue한게 바로 사용됨, 그거 방지
         }
         else {
-            ProcessIO(cfg, current_time);
+            ProcessIO(cfg, current_time, NULL);
 
             //실행할 프로세스 선택
             if ((running == NULL) && !isQueueEmpty(cfg->readyQueue)) {
@@ -403,11 +390,11 @@ void SJF(Process* plist, int n, SystemConfig* cfg) {
 
         if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
             // I/O 처리
-            ProcessIO(cfg, current_time);
+            ProcessIO(cfg, current_time, NULL);
         }
         else {
             // I/O 처리
-            ProcessIO(cfg, current_time);
+            ProcessIO(cfg, current_time, NULL);
 
             if (!running && !isQueueEmpty(cfg->readyQueue)) {
                 // 최소 burst time 프로세스 선택
@@ -557,11 +544,11 @@ void Priority_NonPreemptive(Process* plist, int n, SystemConfig* cfg) {
 
         if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
             // I/O 처리
-            ProcessIO(cfg, current_time);
+            ProcessIO(cfg, current_time, NULL);
         }
         else {
             // I/O 처리
-            ProcessIO(cfg, current_time);
+            ProcessIO(cfg, current_time, NULL);
 
             Aging(cfg->readyQueue);
 
@@ -617,18 +604,22 @@ void Priority_Preemptive(Process* plist, int n, SystemConfig* cfg) {
 
 
     while (completed < n) {
+
+        int enqueued_this_tick = 0;
+
         for (int i = 0; i < n; i++) {
             if (plist[i].arrival_time == current_time && plist[i].remaining_time > 0) {
                 enqueue(cfg->readyQueue, &plist[i]);
+                enqueued_this_tick++;
             }
         }
 
         if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
-            ProcessIO(cfg, current_time);
+            ProcessIO(cfg, current_time, &enqueued_this_tick);
         }
         else {
             // I/O 처리
-            ProcessIO(cfg, current_time);
+            ProcessIO(cfg, current_time, &enqueued_this_tick);
             Aging(cfg->readyQueue);
 
             Process* top = NULL;
@@ -702,11 +693,11 @@ void RoundRobin(Process* plist, int n, SystemConfig* cfg, int time_quantum) {
         }
 
         if (!running && isQueueEmpty(cfg->readyQueue) && !isQueueEmpty(cfg->waitingQueue)) {
-            ProcessIO(cfg, current_time);
+            ProcessIO(cfg, current_time, NULL);
         }
         else {
             // I/O 처리
-            ProcessIO(cfg, current_time);
+            ProcessIO(cfg, current_time, NULL);
 
             if (!running && !isQueueEmpty(cfg->readyQueue)) {
                 running = dequeue(cfg->readyQueue);
