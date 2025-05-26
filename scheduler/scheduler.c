@@ -183,7 +183,6 @@ Process* clone_process_list(Process* original, int n) {
     for (int i = 0; i < n; i++) {
         copy[i] = original[i];
 
-        // Deep copy
         if (original[i].io_request_len > 0) {
             copy[i].io_request_times = malloc(sizeof(int) * original[i].io_request_len);
             copy[i].io_burst_times = malloc(sizeof(int) * original[i].io_request_len);
@@ -731,7 +730,7 @@ void RoundRobin(Process* plist, int n, SystemConfig* cfg, int time_quantum) {
 
 // ------------------ main ------------------
 int main() {
-    int n = 2;
+    int n = 5;
     Process* original = Create_Process(n);
     Print_Processes(original, n);
 
