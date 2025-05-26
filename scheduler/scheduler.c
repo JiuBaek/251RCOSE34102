@@ -30,8 +30,6 @@ typedef struct {
     int remaining_time;
     int waiting_time; // eval에 사용
     int turnaround_time; // eval에 사용
-
-    int is_waiting_io; //지금 io 진행중인가
 } Process;
 Process processes[MAX_PROCESSES];
 
@@ -172,7 +170,6 @@ Process* Create_Process(int n) {
         plist[i].remaining_time = plist[i].cpu_burst_time;
         plist[i].waiting_time = 0;
         plist[i].turnaround_time = 0;
-        plist[i].is_waiting_io = 0;
     }
 
     return plist;
@@ -234,7 +231,7 @@ void PrintGanttChart(int* chart, int time) {
     printf("|\n");
 
     for (int i = 0; i <= time; i++) {
-        printf("%5d", i);
+        printf("%3d  ", i);
     }
     printf("\n");
 
@@ -256,7 +253,7 @@ void Evaluation(Process* plist, int n, const char* name) {
     float avg_tt = total_tt / n;
 
     printf("\n Evaluation for [%s]\n", name);
-    printf("Avg Waiting Time: %.2f\n", avg_wt);
+    printf("Avg Waiting Time: %.2f\t", avg_wt);
     printf("Avg Turnaround Time: %.2f\n", avg_tt);
 
     return;
@@ -271,7 +268,6 @@ int HandleIORequest(Process** running_ptr, SystemConfig* cfg, int current_time) 
     // IO request time 됐는지 확인
     if (p->io_request_len > 0 && p->io_request_times[0] == executed) {
 
-        p->is_waiting_io = 1;
         p->io_remaining_time = p->io_burst_times[0];
 
         enqueue(cfg->waitingQueue, p);
@@ -306,7 +302,6 @@ void ProcessIO(SystemConfig* cfg, int current_time) {
             p->io_remaining_time--;
             
             if (p->io_remaining_time < 0) {
-                p->is_waiting_io = 0;
                 enqueue(cfg->readyQueue, p);
             }
             else {
@@ -484,7 +479,7 @@ void SJF_Preemptive(Process* plist, int n, SystemConfig* cfg) {
                 int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
 
                 Process* p = cfg->readyQueue->data[idx];
-                if (!p->is_waiting_io && p->remaining_time > 0) {
+                if (p->remaining_time > 0) {
                     if (min_idx == -1 || p->remaining_time < cfg->readyQueue->data[min_idx]->remaining_time) {
                         min_idx = idx;
                     }
@@ -624,7 +619,7 @@ void Priority_Preemptive(Process* plist, int n, SystemConfig* cfg) {
             int idx = (cfg->readyQueue->front + i) % cfg->readyQueue->capacity;
             Process* p = cfg->readyQueue->data[idx];
 
-            if (p->remaining_time > 0 && !p->is_waiting_io) {
+            if (p->remaining_time > 0) {
                 if (!min || p->priority < min->priority) {
                     min = p;
                     min_idx = idx;
