@@ -182,6 +182,20 @@ Process* clone_process_list(Process* original, int n) {
     Process* copy = (Process*)malloc(sizeof(Process) * n);
     for (int i = 0; i < n; i++) {
         copy[i] = original[i];
+
+        // Deep copy
+        if (original[i].io_request_len > 0) {
+            copy[i].io_request_times = malloc(sizeof(int) * original[i].io_request_len);
+            copy[i].io_burst_times = malloc(sizeof(int) * original[i].io_request_len);
+            for (int j = 0; j < original[i].io_request_len; j++) {
+                copy[i].io_request_times[j] = original[i].io_request_times[j];
+                copy[i].io_burst_times[j] = original[i].io_burst_times[j];
+            }
+        }
+        else {
+            copy[i].io_request_times = NULL;
+            copy[i].io_burst_times = NULL;
+        }
     }
     return copy;
 }
@@ -211,11 +225,10 @@ void Print_Processes(Process* plist, int n) {
 
 //--------------------- Gantt Chart --------------------------
 void PrintGanttChart(int* chart, int time) {
-    printf("\nGantt Chart:\n");
 
     for (int i = 0; i < time; i++) {
         if (chart[i] == 0)
-            printf("|Idle ");
+            printf("|Idle");
         else
             printf("| P%d ", chart[i]);
     }
@@ -244,8 +257,8 @@ void Evaluation(Process* plist, int n, const char* name) {
     float avg_tt = total_tt / n;
 
     printf("\n Evaluation for [%s]\n", name);
-    printf("Average Waiting Time: %.2f\n", avg_wt);
-    printf("Average Turnaround Time: %.2f\n", avg_tt);
+    printf("Avg Waiting Time: %.2f\n", avg_wt);
+    printf("Avg Turnaround Time: %.2f\n", avg_tt);
 
     return;
 }
@@ -256,7 +269,7 @@ int HandleIORequest(Process** running_ptr, SystemConfig* cfg, int current_time) 
 
     int executed = p->cpu_burst_time - p->remaining_time;
 
-    // IO 요청이 남아 있는지 확인
+    // IO request time 됐는지 확인
     if (p->io_request_len > 0 && p->io_request_times[0] == executed) {
 
         p->is_waiting_io = 1;
@@ -285,15 +298,15 @@ int HandleIORequest(Process** running_ptr, SystemConfig* cfg, int current_time) 
 }
 
 void ProcessIO(SystemConfig* cfg, int current_time) {
-    int queue_size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
+    int size = (cfg->waitingQueue->rear - cfg->waitingQueue->front + cfg->waitingQueue->capacity) % cfg->waitingQueue->capacity;
 
-    for (int i = 0; i < queue_size; i++) {
+    for (int i = 0; i < size; i++) {
         Process* p = dequeue(cfg->waitingQueue);
 
         if (p) {
             p->io_remaining_time--;
             
-            if (p->io_remaining_time <= 0) {
+            if (p->io_remaining_time < 0) {
                 p->is_waiting_io = 0;
                 enqueue(cfg->readyQueue, p);
             }
@@ -307,7 +320,7 @@ void ProcessIO(SystemConfig* cfg, int current_time) {
 }
 
 
-//------------------------- AGING (priority) -------------------------------
+//------------------------- AGING (for priority) -------------------------------
 void Aging(Queue* q) {
     int size = (q->rear - q->front + q->capacity) % q->capacity;
     for (int i = 0; i < size; i++) {
@@ -346,7 +359,6 @@ void FCFS(Process* plist, int n, SystemConfig* cfg) {
                 enqueue(cfg->readyQueue, &plist[i]);
             }
         }
-
 
         //실행할 프로세스 선택
         if ((running == NULL) && !isQueueEmpty(cfg->readyQueue)) {
@@ -719,7 +731,7 @@ void RoundRobin(Process* plist, int n, SystemConfig* cfg, int time_quantum) {
 
 // ------------------ main ------------------
 int main() {
-    int n = 5;
+    int n = 2;
     Process* original = Create_Process(n);
     Print_Processes(original, n);
 
