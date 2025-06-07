@@ -254,7 +254,7 @@ void Evaluation(Process* plist, int n, const char* name) {
 
     printf("\n Evaluation for [%s]\n", name);
     printf("Avg Waiting Time: %.2f\t", avg_wt);
-    printf("Avg Turnaround Time: %.2f\n", avg_tt);
+    printf("\tAvg Turnaround Time: %.2f\n", avg_tt);
 
     return;
 }
@@ -427,7 +427,6 @@ void SJF(Process* plist, int n, SystemConfig* cfg) {
             running->remaining_time--;
             gantt_chart[current_time] = running->pid;
 
-            int executed = running->cpu_burst_time - running->remaining_time;
 
             if (!HandleIORequest(&running, cfg, current_time)) {
                 if (running && running->remaining_time <= 0) {
@@ -502,7 +501,7 @@ void SJF_Preemptive(Process* plist, int n, SystemConfig* cfg) {
         if (running) {
             running->remaining_time--;
             gantt_chart[current_time] = running->pid;
-
+            
             if (!HandleIORequest(&running, cfg, current_time)) {
                 if (running && running->remaining_time <= 0) {
                     running->turnaround_time = current_time + 1 - running->arrival_time;
@@ -608,7 +607,7 @@ void Priority_Preemptive(Process* plist, int n, SystemConfig* cfg) {
             }
         }
 
-        Aging(cfg->readyQueue);
+        //Aging(cfg->readyQueue);
 
         Process* min = NULL;
         int min_idx = -1;
@@ -783,4 +782,3 @@ int main() {
     free(original);
     return 0;
 }
-
