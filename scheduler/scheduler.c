@@ -607,7 +607,7 @@ void Priority_Preemptive(Process* plist, int n, SystemConfig* cfg) {
             }
         }
 
-        //Aging(cfg->readyQueue);
+        Aging(cfg->readyQueue);
 
         Process* min = NULL;
         int min_idx = -1;
@@ -724,7 +724,7 @@ void RoundRobin(Process* plist, int n, SystemConfig* cfg, int time_quantum) {
 
 // ------------------ main ------------------
 int main() {
-    int n = 5;
+    int n = 3;
     Process* original = Create_Process(n);
     Print_Processes(original, n);
 
